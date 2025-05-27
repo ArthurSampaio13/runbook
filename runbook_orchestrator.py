@@ -16,63 +16,16 @@ class AWSRunbookGenerator:
     def __init__(self):
         self.output_dir = Path("./output")
         self.output_dir.mkdir(exist_ok=True)
-        self.target_accounts = self._get_target_accounts()
-        self.regions = os.getenv("REGIONS_TO_SCAN", "us-east-1").split(",")
-        self.cross_account_role = os.getenv(
-            "CROSS_ACCOUNT_ROLE", "OrganizationAccountAccessRole"
-        )
-        self.max_workers = int(os.getenv("MAX_WORKERS", "5"))
         self.current_account = boto3.client("sts").get_caller_identity()["Account"]
-
-    def _get_target_accounts(self):
-        """Get target accounts from environment or organization"""
-        env_accounts = os.getenv("TARGET_ACCOUNTS", "").strip()
-        if env_accounts:
-            return [acc.strip() for acc in env_accounts.split(",") if acc.strip()]
-
-        try:
-            org_client = boto3.client("organizations")
-            response = org_client.list_accounts()
-            accounts = [
-                acc["Id"] for acc in response["Accounts"] if acc["Status"] == "ACTIVE"
-            ]
-            logger.info(f"Found {len(accounts)} active accounts in organization")
-            return accounts
-        except Exception as e:
-            logger.warning(f"Could not list organization accounts: {e}")
-            logger.info("Using current account only")
-            return [self.current_account]
-
-    def assume_role(self, account_id, role_name=None):
-        """Assume cross-account role for accessing other accounts"""
-        if account_id == self.current_account:
-            return {}
-        role_name = role_name or self.cross_account_role
-        sts_client = boto3.client("sts")
-        role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
-        try:
-            response = sts_client.assume_role(
-                RoleArn=role_arn,
-                RoleSessionName=f"RunbookSession-{account_id}",
-                DurationSeconds=3600,
-            )
-
-            return {
-                "AWS_ACCESS_KEY_ID": credentials["AccessKeyId"],
-                "AWS_SECRET_ACCESS_KEY": credentials["SecretAccessKey"],
-                "AWS_SESSION_TOKEN": credentials["SessionToken"],
-            }
-        except Exception as e:
-            logger.error(f"Failed to assume role for account {account_id}: {e}")
-            raise
+        self.target_accounts = [self.current_account]
+        self.regions = os.getenv("REGIONS_TO_SCAN", "us-east-1").split(",")
+        self.max_workers = int(os.getenv("MAX_WORKERS", "5"))
+        logger.info(f"Operating exclusively on AWS Account: {self.current_account}")
 
     def run_collection(self, account_id, region):
         """Run data collection for a specific account/region combination"""
         try:
-            if account_id != self.current_account:
-                env_vars = self.assume_role(account_id)
-            else:
-                env_vars = {}
+            env_vars = {}
             env = os.environ.copy()
             env.update(env_vars)
             env["AWS_DEFAULT_REGION"] = region
