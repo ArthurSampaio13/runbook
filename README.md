@@ -1,6 +1,6 @@
 # AWS Infrastructure Runbook Generator
 
-Um sistema automatizado para gerar documentação completa da infraestrutura AWS em formato profissional, suportando múltiplas contas e regiões.
+Um sistema automatizado para gerar documentação completa da infraestrutura AWS.
 
 ## 📋 Visão Geral
 
@@ -9,33 +9,12 @@ Este projeto automatiza a coleta de informações sobre recursos AWS e gera um r
 - **Auditorias de infraestrutura**
 - **Documentação para compliance**
 - **Onboarding de novos membros da equipe**
-- **Análise de recursos para otimização de custos**
-- **Backup de configurações para disaster recovery**
-
-## 🏗️ Arquitetura
-
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Conta Mestre  │    │  Contas Membros  │    │   Runbook       │
-│                 │    │                  │    │                 │
-│ ┌─────────────┐ │    │ ┌──────────────┐ │    │ ┌─────────────┐ │
-│ │ Orchestrator│─┼────┼▶│ Cross-Account│ │    │ │  Markdown   │ │
-│ │   Python    │ │    │ │    Role      │ │    │ │    File     │ │
-│ └─────────────┘ │    │ └──────────────┘ │    │ └─────────────┘ │
-│                 │    │                  │    │        │        │
-│ ┌─────────────┐ │    │ ┌──────────────┐ │    │ ┌─────────────┐ │
-│ │   Bash      │ │    │ │  AWS APIs    │ │    │ │   DOCX      │ │
-│ │  Collector  │ │    │ │              │ │    │ │   File      │ │
-│ └─────────────┘ │    │ └──────────────┘ │    │ └─────────────┘ │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-```
 
 ## 🚀 Recursos
 
 ### Serviços AWS Suportados
 
 - **EC2**: Instâncias, VPCs, Subnets, Security Groups
-- **S3**: Buckets e configurações
 - **Lambda**: Funções e configurações
 - **RDS**: Instâncias e clusters
 - **API Gateway**: APIs REST
@@ -46,13 +25,12 @@ Este projeto automatiza a coleta de informações sobre recursos AWS e gera um r
 - **EventBridge**: Rules e eventos
 - **AWS Backup**: Vaults
 - **Organizations**: Informações da organização
-- **IAM**: Roles, usuários e políticas (visão geral)
+- **IAM**: Usuários
 
 ### Funcionalidades
 
 - ✅ **Multi-conta**: Suporte completo para AWS Organizations
 - ✅ **Multi-região**: Coleta dados de múltiplas regiões
-- ✅ **Processamento paralelo**: Execução otimizada
 - ✅ **Cross-account access**: Roles automatizados via Terraform
 - ✅ **Formato profissional**: Saída em Markdown e DOCX
 - ✅ **Tratamento de erros**: Robusto e confiável
@@ -60,8 +38,6 @@ Este projeto automatiza a coleta de informações sobre recursos AWS e gera um r
 - ✅ **Configuração flexível**: Via variáveis de ambiente
 
 ## 📦 Pré-requisitos
-
-### Software Necessário
 
 ```bash
 # AWS CLI
@@ -92,26 +68,7 @@ sudo chmod +x /usr/local/bin/terragrunt
 
 ### Permissões AWS
 
-O usuário/role deve ter as seguintes permissões:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "sts:AssumeRole",
-        "organizations:*",
-        "iam:CreateRole",
-        "iam:AttachRolePolicy",
-        "iam:CreatePolicy"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
+- TODO 
 
 ## ⚙️ Instalação e Configuração
 
@@ -143,18 +100,6 @@ TARGET_ACCOUNTS=123456789012,123456789013,123456789014
 REGIONS_TO_SCAN=us-east-1,us-west-2,eu-west-1
 CROSS_ACCOUNT_ROLE=RunbookGeneratorRole
 MAX_WORKERS=5
-```
-
-### 4. Configure as contas alvo
-
-```bash
-# Edite o arquivo de contas
-nano config/accounts.txt
-
-# Adicione uma conta por linha
-123456789012
-123456789013
-123456789014
 ```
 
 ## 🎯 Uso
@@ -224,99 +169,4 @@ O sistema gera os seguintes arquivos no diretório `output/`:
 | Instance ID | Name | Type | State | AZ | Launch Time |
 |-------------|------|------|-------|----|-------------|
 | i-1234567890abcdef0 | WebServer | t3.micro | running | us-east-1a | 2024-01-10T10:00:00Z |
-```
-
-## 🔧 Configuração Avançada
-
-### Cross-Account Roles
-
-Para múltiplas contas, o sistema automaticamente:
-
-1. **Cria roles** em cada conta membro
-2. **Configura trust policies** para a conta mestre
-3. **Aplica permissões** necessárias para leitura
-
-### Customização de Regiões
-
-```bash
-# Editar regiões no arquivo de configuração
-nano config/regions.conf
-
-# Formato: region_code|region_name|enabled
-us-east-1|US East (N. Virginia)|true
-us-west-2|US West (Oregon)|true
-eu-west-1|Europe (Ireland)|false
-```
-
-### Template DOCX Personalizado
-
-```bash
-# Adicionar template personalizado
-cp seu-template.docx config/pandoc-template.docx
-```
-
-## 🐛 Troubleshooting
-
-### Problemas Comuns
-
-**1. Erro de Permissões**
-```
-Error: Access Denied
-```
-**Solução**: Verificar permissões IAM e cross-account roles
-
-**2. Timeout na Coleta**
-```
-Collection timeout for account/region
-```
-**Solução**: Aumentar `MAX_WORKERS` ou reduzir regiões
-
-**3. Pandoc não encontrado**
-```
-Pandoc not available
-```
-**Solução**: `sudo apt-get install pandoc`
-
-### Logs
-
-Os logs são salvos em `logs/deployment_YYYYMMDD_HHMMSS.log`
-
-```bash
-# Visualizar logs em tempo real
-tail -f logs/deployment_*.log
-```
-
-## 📈 Performance
-
-### Benchmarks Típicos
-
-| Cenário | Contas | Regiões | Tempo | Recursos |
-|---------|--------|---------|-------|----------|
-| Pequeno | 1 | 1 | 2-3 min | ~50 recursos |
-| Médio | 3 | 2 | 5-8 min | ~200 recursos |
-| Grande | 10 | 5 | 15-25 min | ~1000 recursos |
-
-### Otimizações
-
-- **Paralelização**: Ajustar `MAX_WORKERS`
-- **Regiões**: Focar apenas nas regiões utilizadas
-- **Filtros**: Implementar filtros por tags (futuro)
-
-## 🔒 Segurança
-
-### Princípios de Segurança
-
-- **Least Privilege**: Roles com permissões mínimas necessárias
-- **External ID**: Suporte para external ID nas trust policies
-- **Temporary Credentials**: Uso de STS para assume role
-- **Audit Trail**: Todos os acessos são logados no CloudTrail
-
-### Boas Práticas
-
-```bash
-# Rotação de credenciais
-aws sts get-session-token --duration-seconds 3600
-
-# Verificação de permissões
-aws iam simulate-principal-policy --policy-source-arn arn:aws:iam::ACCOUNT:role/ROLE --action-names ec2:DescribeInstances
 ```
