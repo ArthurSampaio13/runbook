@@ -57,7 +57,7 @@ echo "Collecting EC2 instances..."
 ec2_content=$(aws ec2 describe-instances --region "$REGION" --query "Reservations[].Instances[].{InstanceId:InstanceId,InstanceType:InstanceType,State:State.Name,AvailabilityZone:Placement.AvailabilityZone,LaunchTime:LaunchTime,Tags:Tags[?Key=='Name'].Value|[0]}" --output json | jq -r '[
   "| Instance ID | Name | Type | State | AZ | Launch Time |",
   "|-------------|------|------|-------|----|-----------  |"
-] + (map("| \(.InstanceId) | \((.Tags | if . == null then "N/A" else . end)) | \(.InstanceType) | \(.State) | \(.AvailabilityZone) | \(.LaunchTime) |")) | .[]')
+] + (map("| \(.InstanceId) | \((.Tags | if . == null then "N/A" else . end)) | \(.InstanceType) | \(.State) | \(.AvailabilityZone) | \(.LaunchTime | if . == null then "N/A" else . end) |")) | .[]')
 add_section "EC2 Instances" "$ec2_content"
 
 echo "Collecting Lambda functions..."
@@ -71,7 +71,7 @@ echo "Collecting RDS instances..."
 rds_content=$(aws rds describe-db-instances --region "$REGION" --query "DBInstances[].{DBInstanceIdentifier:DBInstanceIdentifier,DBInstanceStatus:DBInstanceStatus,Engine:Engine,EngineVersion:EngineVersion,DBInstanceClass:DBInstanceClass,AllocatedStorage:AllocatedStorage}" --output json | jq -r '[
   "| DB Instance ID | Status | Engine | Version | Class | Storage (GB) |",
   "|----------------|--------|--------|---------|-------|--------------|"
-] + (map("| \(.DBInstanceIdentifier) | \(.DBInstanceStatus) | \(.Engine) | \(.EngineVersion) | \(.DBInstanceClass) | \(.AllocatedStorage) |")) | .[]')
+] + (map("| \(.DBInstanceIdentifier) | \(.DBInstanceStatus) | \(.Engine | if . == null then "N/A" else . end) | \(.EngineVersion | if . == null then "N/A" else . end) | \(.DBInstanceClass) | \(.AllocatedStorage) |")) | .[]')
 add_section "RDS Instances" "$rds_content"
 
 echo "Collecting API Gateway..."
@@ -79,7 +79,7 @@ apigw_content=$(safe_aws_call "API Gateway" "aws apigateway get-rest-apis --regi
   \"| API Name | API ID | Created Date |\",
   \"|----------|--------|--------------|\"
 ] + (map(\"| \\(.name) | \\(.id) | \\(.createdDate) |\")) | .[]'")
-add_section "API Gateway" "$apigw_content"
+add_section "API Gateway" "$(echo "$apigw_content" | sed 's/null/N\/A/g')" 
 
 echo "Collecting CloudFront distributions..."
 cf_content=$(aws cloudfront list-distributions --query "DistributionList.Items[].{Id:Id,DomainName:DomainName,Status:Status,PriceClass:PriceClass}" --output json | jq -r '[
@@ -92,7 +92,7 @@ echo "Collecting Load Balancers..."
 lb_content=$(aws elbv2 describe-load-balancers --region "$REGION" --query "LoadBalancers[].{LoadBalancerName:LoadBalancerName,Type:Type,State:State.Code,Scheme:Scheme,VpcId:VpcId}" --output json | jq -r '[
   "| Load Balancer Name | Type | State | Scheme | VPC ID |",
   "|--------------------|------|-------|--------|--------|"
-] + (map("| \(.LoadBalancerName) | \(.Type) | \(.State) | \(.Scheme) | \(.VpcId) |")) | .[]')
+] + (map("| \(.LoadBalancerName) | \(.Type) | \(.State) | \(.Scheme) | \(.VpcId | if . == null then "N/A" else . end) |")) | .[]')
 add_section "Load Balancers" "$lb_content"
 
 echo "Collecting ECS clusters..."
@@ -106,7 +106,7 @@ echo "Collecting SNS topics..."
 sns_content=$(aws sns list-topics --region "$REGION" --query "Topics[].TopicArn" --output json | jq -r '[
   "| Topic ARN |",
   "|-----------|"
-] + (map("| \(.) |")) | .[]')
+] + (map("| \(. | if . == null then "N/A" else . end) |")) | .[]')
 add_section "SNS Topics" "$sns_content"
 
 echo "Collecting EventBridge rules..."
@@ -120,7 +120,7 @@ echo "Collecting AWS Backup vaults..."
 backup_content=$(aws backup list-backup-vaults --region "$REGION" --query "BackupVaultList[].{BackupVaultName:BackupVaultName,NumberOfRecoveryPoints:NumberOfRecoveryPoints,BackupVaultArn:BackupVaultArn}" --output json | jq -r '[
   "| Vault Name | Recovery Points | Vault ARN |",
   "|------------|-----------------|-----------|"
-] + (map("| \(.BackupVaultName) | \(.NumberOfRecoveryPoints) | \(.BackupVaultArn) |")) | .[]')
+] + (map("| \(.BackupVaultName) | \(.NumberOfRecoveryPoints | if . == null then 0 else . end) | \(.BackupVaultArn) |")) | .[]')
 add_section "AWS Backup Vaults" "$backup_content"
 
 echo "Collecting IAM users..."
