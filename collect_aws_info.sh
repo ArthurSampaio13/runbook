@@ -26,10 +26,11 @@ safe_aws_call() {
   local service="$1"
   local command="$2"
   
-  if ! $command 2>/dev/null; then
+  if ! eval "$command" 2>/dev/null; then
     echo "| Service | Status |"
     echo "|---------|--------|"
     echo "| $service | Access Denied or Service Unavailable |"
+    return 1 # Indicate failure
   fi
 }
 
@@ -75,11 +76,13 @@ rds_content=$(aws rds describe-db-instances --region "$REGION" --query "DBInstan
 add_section "RDS Instances" "$rds_content"
 
 echo "Collecting API Gateway..."
-apigw_content=$(safe_aws_call "API Gateway" "aws apigateway get-rest-apis --region '$REGION' --query 'items[].{name:name,id:id,createdDate:createdDate}' --output json | jq -r '[
+apigw_output=$(safe_aws_call "API Gateway" "aws apigateway get-rest-apis --region '$REGION' --query 'items[].{name:name,id:id,createdDate:createdDate}' --output json")
+
+apigw_content=$(echo "$apigw_output" | jq -r '[
   \"| API Name | API ID | Created Date |\",
   \"|----------|--------|--------------|\"
 ] + (map(\"| \\(.name) | \\(.id) | \\(.createdDate) |\")) | .[]'")
-add_section "API Gateway" "$(echo "$apigw_content" | sed 's/null/N\/A/g')" 
+add_section "API Gateway" "$(echo "$apigw_content" | sed 's/null/N\/A/g')"
 
 echo "Collecting CloudFront distributions..."
 cf_content=$(aws cloudfront list-distributions --query "DistributionList.Items[].{Id:Id,DomainName:DomainName,Status:Status,PriceClass:PriceClass}" --output json | jq -r '[
