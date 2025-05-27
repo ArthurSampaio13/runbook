@@ -18,7 +18,7 @@ class AWSRunbookGenerator:
         self.output_dir.mkdir(exist_ok=True)
         self.current_account = boto3.client("sts").get_caller_identity()["Account"]
         self.target_accounts = [self.current_account]
-        self.regions = os.getenv("REGIONS_TO_SCAN", "us-east-1").split(",")
+        self.regions = os.getenv("REGIONS_TO_SCAN", "sa-east-1").split(",")
         self.max_workers = int(os.getenv("MAX_WORKERS", "5"))
         logger.info(f"Operating exclusively on AWS Account: {self.current_account}")
 
