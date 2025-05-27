@@ -14,7 +14,7 @@ Este projeto automatiza a coleta de informações sobre recursos AWS e gera um r
 
 ### Serviços AWS Suportados
 
-- **EC2**: Instâncias, VPCs, Subnets, Security Groups
+- **EC2**: Instâncias, VPCs e Subnets
 - **Lambda**: Funções e configurações
 - **RDS**: Instâncias e clusters
 - **API Gateway**: APIs REST
@@ -27,16 +27,6 @@ Este projeto automatiza a coleta de informações sobre recursos AWS e gera um r
 - **Organizations**: Informações da organização
 - **IAM**: Usuários
 
-### Funcionalidades
-
-- ✅ **Multi-conta**: Suporte completo para AWS Organizations
-- ✅ **Multi-região**: Coleta dados de múltiplas regiões
-- ✅ **Cross-account access**: Roles automatizados via Terraform
-- ✅ **Formato profissional**: Saída em Markdown e DOCX
-- ✅ **Tratamento de erros**: Robusto e confiável
-- ✅ **Logs detalhados**: Para troubleshooting
-- ✅ **Configuração flexível**: Via variáveis de ambiente
-
 ## 📦 Pré-requisitos
 
 ```bash
@@ -44,11 +34,6 @@ Este projeto automatiza a coleta de informações sobre recursos AWS e gera um r
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
 unzip awscliv2.zip
 sudo ./aws/install
-
-# Terraform
-wget https://releases.hashicorp.com/terraform/1.6.0/terraform_1.6.0_linux_amd64.zip
-unzip terraform_1.6.0_linux_amd64.zip
-sudo mv terraform /usr/local/bin/
 
 # Python 3.8+
 sudo apt-get update
@@ -60,71 +45,19 @@ sudo apt-get install jq
 # Pandoc (para conversão DOCX)
 sudo apt-get install pandoc
 
-# Terragrunt (opcional)
-wget https://github.com/gruntwork-io/terragrunt/releases/download/v0.50.0/terragrunt_linux_amd64
-sudo mv terragrunt_linux_amd64 /usr/local/bin/terragrunt
-sudo chmod +x /usr/local/bin/terragrunt
-```
-
-### Permissões AWS
-
-- TODO 
-
 ## ⚙️ Instalação e Configuração
 
 ### 1. Clone o repositório
 
 ```bash
-git clone https://github.com/seu-usuario/aws-runbook-generator.git
-cd aws-runbook-generator
+git clone https://github.com/ArthurSampaio13/runbook.git
+cd runbook
 ```
 
 ### 2. Instale dependências Python
 
 ```bash
 pip3 install -r requirements.txt
-```
-
-### 3. Configure as variáveis de ambiente
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-Exemplo de configuração:
-
-```env
-AWS_DEFAULT_REGION=us-east-1
-TARGET_ACCOUNTS=123456789012,123456789013,123456789014
-REGIONS_TO_SCAN=us-east-1,us-west-2,eu-west-1
-CROSS_ACCOUNT_ROLE=RunbookGeneratorRole
-MAX_WORKERS=5
-```
-
-## 🎯 Uso
-
-### Opção 1: Execução Completa (Recomendado)
-
-```bash
-# Deploy da infraestrutura + Geração do runbook
-./deploy.sh all
-```
-
-### Opção 2: Execução em Etapas
-
-```bash
-# 1. Setup do ambiente
-./deploy.sh setup
-
-# 2. Deploy dos cross-account roles
-./deploy.sh deploy
-
-# 3. Geração do runbook
-./deploy.sh generate
-
-# 4. Limpeza (opcional)
-./deploy.sh cleanup
 ```
 
 ### Opção 3: Execução Direta do Python
