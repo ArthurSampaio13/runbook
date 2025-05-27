@@ -123,5 +123,12 @@ backup_content=$(aws backup list-backup-vaults --region "$REGION" --query "Backu
 ] + (map("| \(.BackupVaultName) | \(.NumberOfRecoveryPoints) | \(.BackupVaultArn) |")) | .[]')
 add_section "AWS Backup Vaults" "$backup_content"
 
+echo "Collecting IAM users..."
+iam_content=$(aws iam list-users --query "Users[].{UserName:UserName,UserId:UserId,Arn:Arn,CreateDate:CreateDate}" --output json | jq -r '[
+  "| User Name | User ID | ARN | Created Date |",
+  "|-----------|---------|-----|--------------|"
+] + (map("| \(.UserName) | \(.UserId) | \(.Arn) | \(.CreateDate) |")) | .[]')
+add_section "IAM Users" "$iam_content"
+
 echo "AWS infrastructure data collection completed for Account: $ACCOUNT_ID, Region: $REGION"
 echo "Output file: $OUTPUT_FILE"
