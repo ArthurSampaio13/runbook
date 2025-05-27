@@ -5,92 +5,123 @@ ACCOUNT_ID=${ACCOUNT_ID:-"$(aws sts get-caller-identity --query Account --output
 REGION=${AWS_DEFAULT_REGION:-"us-east-1"}
 OUTPUT_FILE="runbook_${ACCOUNT_ID}_${REGION}.md"
 
-echo "# 📄 AWS Runbook" > "$OUTPUT_FILE"
-echo "**Account:** $ACCOUNT_ID" >> "$OUTPUT_FILE"
+echo "# AWS Infrastructure Runbook" > "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
+echo "**Account ID:** $ACCOUNT_ID" >> "$OUTPUT_FILE"
 echo "**Region:** $REGION" >> "$OUTPUT_FILE"
-echo "**Generated:** $(date)" >> "$OUTPUT_FILE"
+echo "**Generated:** $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$OUTPUT_FILE"
 echo "" >> "$OUTPUT_FILE"
 
 add_section() {
   local title="$1"
-  local header="$2"
-  local data="$3"
-
+  local content="$2"
+  
   echo "## $title" >> "$OUTPUT_FILE"
   echo "" >> "$OUTPUT_FILE"
-  echo "$header" >> "$OUTPUT_FILE"
-  echo "$data" >> "$OUTPUT_FILE"
+  echo "$content" >> "$OUTPUT_FILE"
   echo "" >> "$OUTPUT_FILE"
 }
 
-# AWS Organizations
-org=$(aws organizations describe-organization --query "Organization.{Id:Id, MasterEmail:MasterAccountEmail, MasterId:MasterAccountId}" --output json || echo "{}")
-org_table=$(echo "$org" | jq -r '["| Id | MasterEmail | MasterId |", "|----|-------------|----------|", "| \(.Id) | \(.MasterEmail) | \(.MasterId) |"] | .[]')
-add_section "🏢 AWS Organizations" "$org_table" ""
+safe_aws_call() {
+  local service="$1"
+  local command="$2"
+  
+  if ! $command 2>/dev/null; then
+    echo "| Service | Status |"
+    echo "|---------|--------|"
+    echo "| $service | Access Denied or Service Unavailable |"
+  fi
+}
 
-# VPC
-vpcs=$(aws ec2 describe-vpcs --region "$REGION" --query "Vpcs[].{VpcId:VpcId,Cidr:CidrBlock}" --output json)
-vpcs_table=$(echo "$vpcs" | jq -r '[ "| VpcId | Cidr |", "|-------|------|"] + (map("| \(.VpcId) | \(.Cidr) |")) | .[]')
-add_section "🌐 VPC Summary" "$vpcs_table" ""
+echo "Collecting AWS infrastructure information for Account: $ACCOUNT_ID, Region: $REGION"
 
-# EC2
-ec2=$(aws ec2 describe-instances --region "$REGION" --query "Reservations[].Instances[].{ID:InstanceId,Type:InstanceType,State:State.Name,AZ:Placement.AvailabilityZone}" --output json)
-ec2_table=$(echo "$ec2" | jq -r '[ "| ID | Type | State | AZ |", "|----|------|-------|----|"] + (map("| \(.ID) | \(.Type) | \(.State) | \(.AZ) |")) | .[]')
-add_section "💻 EC2 Instances" "$ec2_table" ""
+echo "Checking AWS Organizations..."
+org_content=$(safe_aws_call "Organizations" "aws organizations describe-organization --query 'Organization.{Id:Id,MasterEmail:MasterAccountEmail,MasterId:MasterAccountId}' --output json | jq -r '[\"| Organization ID | Master Email | Master Account ID |\", \"|---------------|--------------|----------------|\", \"| \\(.Id) | \\(.MasterEmail) | \\(.MasterId) |\"] | .[]'")
+add_section "AWS Organization" "$org_content"
 
-# S3
-s3=$(aws s3api list-buckets --query "Buckets[].Name" --output json)
-s3_table=$(echo "$s3" | jq -r '[ "| BucketName |", "|------------|"] + (map("| \(.) |")) | .[]')
-add_section "🪣 S3 Buckets" "$s3_table" ""
+echo "Collecting VPC information..."
+vpcs_content=$(aws ec2 describe-vpcs --region "$REGION" --query "Vpcs[].{VpcId:VpcId,CidrBlock:CidrBlock,State:State,IsDefault:IsDefault}" --output json | jq -r '[
+  "| VPC ID | CIDR Block | State | Default |",
+  "|--------|------------|-------|---------|"
+] + (map("| \(.VpcId) | \(.CidrBlock) | \(.State) | \(.IsDefault) |")) | .[]')
+add_section "VPC Summary" "$vpcs_content"
 
-# Lambda
-lambda=$(aws lambda list-functions --region "$REGION" --query "Functions[].{Name:FunctionName,Runtime:Runtime}" --output json)
-lambda_table=$(echo "$lambda" | jq -r '[ "| Name | Runtime |", "|------|---------|"] + (map("| \(.Name) | \(.Runtime) |")) | .[]')
-add_section "🌀 Lambda Functions" "$lambda_table" ""
+echo "Collecting subnet information..."
+subnets_content=$(aws ec2 describe-subnets --region "$REGION" --query "Subnets[].{SubnetId:SubnetId,VpcId:VpcId,CidrBlock:CidrBlock,AvailabilityZone:AvailabilityZone,MapPublicIpOnLaunch:MapPublicIpOnLaunch}" --output json | jq -r '[
+  "| Subnet ID | VPC ID | CIDR Block | Availability Zone | Public IP on Launch |",
+  "|-----------|--------|------------|-------------------|---------------------|"
+] + (map("| \(.SubnetId) | \(.VpcId) | \(.CidrBlock) | \(.AvailabilityZone) | \(.MapPublicIpOnLaunch) |")) | .[]')
+add_section "Subnets" "$subnets_content"
 
-# RDS
-rds=$(aws rds describe-db-instances --region "$REGION" --query "DBInstances[].{ID:DBInstanceIdentifier,Status:DBInstanceStatus,Engine:Engine}" --output json)
-rds_table=$(echo "$rds" | jq -r '[ "| ID | Status | Engine |", "|----|--------|--------|"] + (map("| \(.ID) | \(.Status) | \(.Engine) |")) | .[]')
-add_section "🗄️ RDS Instances" "$rds_table" ""
+echo "Collecting EC2 instances..."
+ec2_content=$(aws ec2 describe-instances --region "$REGION" --query "Reservations[].Instances[].{InstanceId:InstanceId,InstanceType:InstanceType,State:State.Name,AvailabilityZone:Placement.AvailabilityZone,LaunchTime:LaunchTime,Tags:Tags[?Key=='Name'].Value|[0]}" --output json | jq -r '[
+  "| Instance ID | Name | Type | State | AZ | Launch Time |",
+  "|-------------|------|------|-------|----|-----------  |"
+] + (map("| \(.InstanceId) | \((.Tags | if . == null then "N/A" else . end)) | \(.InstanceType) | \(.State) | \(.AvailabilityZone) | \(.LaunchTime) |")) | .[]')
+add_section "EC2 Instances" "$ec2_content"
 
-# API Gateway
-apigw=$(aws apigateway get-rest-apis --region "$REGION" --query "items[].{Name:name,ID:id}" --output json)
-apigw_table=$(echo "$apigw" | jq -r '[ "| Name | ID |", "|------|----|"] + (map("| \(.Name) | \(.ID) |")) | .[]')
-add_section "🌐 API Gateway" "$apigw_table" ""
+echo "Collecting Lambda functions..."
+lambda_content=$(aws lambda list-functions --region "$REGION" --query "Functions[].{FunctionName:FunctionName,Runtime:Runtime,Handler:Handler,CodeSize:CodeSize,LastModified:LastModified}" --output json | jq -r '[
+  "| Function Name | Runtime | Handler | Code Size (bytes) | Last Modified |",
+  "|---------------|---------|---------|-------------------|---------------|"
+] + (map("| \(.FunctionName) | \(.Runtime) | \(.Handler) | \(.CodeSize) | \(.LastModified) |")) | .[]')
+add_section "Lambda Functions" "$lambda_content"
 
-# CloudFront
-cf=$(aws cloudfront list-distributions --query "DistributionList.Items[].{ID:Id,Domain:DomainName}" --output json)
-cf_table=$(echo "$cf" | jq -r '[ "| ID | Domain |", "|----|--------|"] + (map("| \(.ID) | \(.Domain) |")) | .[]')
-add_section "🚀 CloudFront Distributions" "$cf_table" ""
+echo "Collecting RDS instances..."
+rds_content=$(aws rds describe-db-instances --region "$REGION" --query "DBInstances[].{DBInstanceIdentifier:DBInstanceIdentifier,DBInstanceStatus:DBInstanceStatus,Engine:Engine,EngineVersion:EngineVersion,DBInstanceClass:DBInstanceClass,AllocatedStorage:AllocatedStorage}" --output json | jq -r '[
+  "| DB Instance ID | Status | Engine | Version | Class | Storage (GB) |",
+  "|----------------|--------|--------|---------|-------|--------------|"
+] + (map("| \(.DBInstanceIdentifier) | \(.DBInstanceStatus) | \(.Engine) | \(.EngineVersion) | \(.DBInstanceClass) | \(.AllocatedStorage) |")) | .[]')
+add_section "RDS Instances" "$rds_content"
 
-# SNS
-sns=$(aws sns list-topics --region "$REGION" --query "Topics[].TopicArn" --output json)
-sns_table=$(echo "$sns" | jq -r '[ "| TopicArn |", "|----------|"] + (map("| \(.) |")) | .[]')
-add_section "📣 SNS Topics" "$sns_table" ""
+echo "Collecting API Gateway..."
+apigw_content=$(safe_aws_call "API Gateway" "aws apigateway get-rest-apis --region '$REGION' --query 'items[].{name:name,id:id,createdDate:createdDate}' --output json | jq -r '[
+  \"| API Name | API ID | Created Date |\",
+  \"|----------|--------|--------------|\"
+] + (map(\"| \\(.name) | \\(.id) | \\(.createdDate) |\")) | .[]'")
+add_section "API Gateway" "$apigw_content"
 
-# AWS Backup
-backup=$(aws backup list-backup-vaults --region "$REGION" --query "BackupVaultList[].{Name:BackupVaultName,ARN:BackupVaultArn}" --output json)
-backup_table=$(echo "$backup" | jq -r '[ "| Name | ARN |", "|------|-----|"] + (map("| \(.Name) | \(.ARN) |")) | .[]')
-add_section "💾 AWS Backup Vaults" "$backup_table" ""
+echo "Collecting CloudFront distributions..."
+cf_content=$(aws cloudfront list-distributions --query "DistributionList.Items[].{Id:Id,DomainName:DomainName,Status:Status,PriceClass:PriceClass}" --output json | jq -r '[
+  "| Distribution ID | Domain Name | Status | Price Class |",
+  "|-----------------|-------------|--------|-------------|"
+] + (map("| \(.Id) | \(.DomainName) | \(.Status) | \(.PriceClass) |")) | .[]')
+add_section "CloudFront Distributions" "$cf_content"
 
-# EventBridge
-eb=$(aws events list-rules --region "$REGION" --query "Rules[].{Name:Name,State:State}" --output json)
-eb_table=$(echo "$eb" | jq -r '[ "| Name | State |", "|------|-------|"] + (map("| \(.Name) | \(.State) |")) | .[]')
-add_section "⏰ EventBridge Rules" "$eb_table" ""
+echo "Collecting Load Balancers..."
+lb_content=$(aws elbv2 describe-load-balancers --region "$REGION" --query "LoadBalancers[].{LoadBalancerName:LoadBalancerName,Type:Type,State:State.Code,Scheme:Scheme,VpcId:VpcId}" --output json | jq -r '[
+  "| Load Balancer Name | Type | State | Scheme | VPC ID |",
+  "|--------------------|------|-------|--------|--------|"
+] + (map("| \(.LoadBalancerName) | \(.Type) | \(.State) | \(.Scheme) | \(.VpcId) |")) | .[]')
+add_section "Load Balancers" "$lb_content"
 
-# Load Balancer
-lb=$(aws elbv2 describe-load-balancers --region "$REGION" --query "LoadBalancers[].{Name:LoadBalancerName,Type:Type,State:State.Code}" --output json)
-lb_table=$(echo "$lb" | jq -r '[ "| Name | Type | State |", "|------|------|-------|"] + (map("| \(.Name) | \(.Type) | \(.State) |")) | .[]')
-add_section "⚖️ Load Balancers" "$lb_table" ""
+echo "Collecting ECS clusters..."
+ecs_content=$(aws ecs list-clusters --region "$REGION" --query "clusterArns[]" --output json | jq -r '[
+  "| Cluster ARN |",
+  "|-------------|"
+] + (map("| \(.) |")) | .[]')
+add_section "ECS Clusters" "$ecs_content"
 
-# ECS
-ecs=$(aws ecs list-clusters --region "$REGION" --query "clusterArns[]" --output json)
-ecs_table=$(echo "$ecs" | jq -r '[ "| ClusterArn |", "|------------|"] + (map("| \(.) |")) | .[]')
-add_section "🐳 ECS Clusters" "$ecs_table" ""
+echo "Collecting SNS topics..."
+sns_content=$(aws sns list-topics --region "$REGION" --query "Topics[].TopicArn" --output json | jq -r '[
+  "| Topic ARN |",
+  "|-----------|"
+] + (map("| \(.) |")) | .[]')
+add_section "SNS Topics" "$sns_content"
 
-# IAM Identity Center (SSO)
-sso=$(aws sso-admin list-users --region "$REGION" --query "Users[].{Username:Username,Status:Status}" --output json || echo "[]")
-sso_table=$(echo "$sso" | jq -r '[ "| Username | Status |", "|----------|--------|"] + (map("| \(.Username) | \(.Status) |")) | .[]')
-add_section "👥 IAM Identity Center (SSO) Users" "$sso_table" ""
+echo "Collecting EventBridge rules..."
+eb_content=$(aws events list-rules --region "$REGION" --query "Rules[].{Name:Name,State:State,Description:Description}" --output json | jq -r '[
+  "| Rule Name | State | Description |",
+  "|-----------|-------|-------------|"
+] + (map("| \(.Name) | \(.State) | \((.Description | if . == null then "N/A" else . end)) |")) | .[]')
+add_section "EventBridge Rules" "$eb_content"
 
-echo "✅ Runbook generated: $OUTPUT_FILE"
+echo "Collecting AWS Backup vaults..."
+backup_content=$(aws backup list-backup-vaults --region "$REGION" --query "BackupVaultList[].{BackupVaultName:BackupVaultName,NumberOfRecoveryPoints:NumberOfRecoveryPoints,BackupVaultArn:BackupVaultArn}" --output json | jq -r '[
+  "| Vault Name | Recovery Points | Vault ARN |",
+  "|------------|-----------------|-----------|"
+] + (map("| \(.BackupVaultName) | \(.NumberOfRecoveryPoints) | \(.BackupVaultArn) |")) | .[]')
+add_section "AWS Backup Vaults" "$backup_content"
+
+echo "AWS infrastructure data collection completed for Account: $ACCOUNT_ID, Region: $REGION"
+echo "Output file: $OUTPUT_FILE"
