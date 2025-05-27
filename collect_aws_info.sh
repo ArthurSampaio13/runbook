@@ -26,11 +26,16 @@ safe_aws_call() {
   local service="$1"
   local command="$2"
   
-  if ! eval "$command" 2>/dev/null; then
+  # Correctly capture output or provide a fallback message
+  local output_from_command
+  if ! output_from_command=$(eval "$command" 2>/dev/null); then
     echo "| Service | Status |"
     echo "|---------|--------|"
     echo "| $service | Access Denied or Service Unavailable |"
-    return 1 # Indicate failure
+    # The command substitution will capture this error message.
+    # The function itself will return 0 (from the last echo) allowing the script to continue.
+  else
+    echo "$output_from_command"
   fi
 }
 
@@ -81,7 +86,7 @@ apigw_output=$(safe_aws_call "API Gateway" "aws apigateway get-rest-apis --regio
 apigw_content=$(echo "$apigw_output" | jq -r '[
   "| API Name | API ID | Created Date |",
   "|----------|--------|--------------|"
-] + (map("| \(.name) | \(.id) | \(.createdDate) |")) | .[]' | sed 's/null/N\\/A/g')
+] + (map("| \(.name) | \(.id) | \(.createdDate) |")) | .[]' | sed 's#null#N/A#g')
 add_section "API Gateway" "$apigw_content"
 
 echo "Collecting CloudFront distributions..."
