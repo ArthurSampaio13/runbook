@@ -97,9 +97,9 @@ add_section "Load Balancers" "$lb_content"
 
 echo "Collecting ECS clusters..."
 ecs_content=$(aws ecs list-clusters --region "$REGION" --query "clusterArns[]" --output json | jq -r '[
-  "| Cluster ARN |",
-  "|-------------|"
-] + (map("| \(.) |")) | .[]')
+ "| Cluster ARN |",
+ "|-------------|"
+] + (map("| \((. | if . == null then "N/A" else . end)) |")) | .[]')
 add_section "ECS Clusters" "$ecs_content"
 
 echo "Collecting SNS topics..."
