@@ -37,7 +37,7 @@ safe_aws_call() {
 echo "Collecting AWS infrastructure information for Account: $ACCOUNT_ID, Region: $REGION"
 
 echo "Checking AWS Organizations..."
-org_content=$(safe_aws_call "Organizations" "aws organizations describe-organization --query 'Organization.{Id:Id,MasterEmail:MasterAccountEmail,MasterId:MasterAccountId}' --output json | jq -r '[\"| Organization ID | Master Email | Master Account ID |\", \"|---------------|--------------|----------------|\", \"| \\(.Id) | \\(.MasterEmail) | \\(.MasterId) |\"] | .[]'")
+org_content=$(safe_aws_call "Organizations" "aws organizations describe-organization --query 'Organization.{Id:Id,MasterEmail:MasterAccountEmail,MasterId:MasterAccountId}' --output json | jq -r '[\"| Organization ID | Master Email | Master Account ID |\", \"|---------------|--------------|----------------|\", \"| \\(.Id) | \\(.MasterEmail) | \\(.MasterId) |\"] | .[]' | sed 's/null/N\\/A/g'")
 add_section "AWS Organization" "$org_content"
 
 echo "Collecting VPC information..."
@@ -79,10 +79,10 @@ echo "Collecting API Gateway..."
 apigw_output=$(safe_aws_call "API Gateway" "aws apigateway get-rest-apis --region '$REGION' --query 'items[].{name:name,id:id,createdDate:createdDate}' --output json")
 
 apigw_content=$(echo "$apigw_output" | jq -r '[
-  \"| API Name | API ID | Created Date |\",
-  \"|----------|--------|--------------|\"
-] + (map(\"| \\(.name) | \\(.id) | \\(.createdDate) |\")) | .[]'")
-add_section "API Gateway" "$(echo "$apigw_content" | sed 's/null/N\/A/g')"
+  "| API Name | API ID | Created Date |",
+  "|----------|--------|--------------|"
+] + (map("| \(.name) | \(.id) | \(.createdDate) |")) | .[]' | sed 's/null/N\\/A/g')
+add_section "API Gateway" "$apigw_content"
 
 echo "Collecting CloudFront distributions..."
 cf_content=$(aws cloudfront list-distributions --query "DistributionList.Items[].{Id:Id,DomainName:DomainName,Status:Status,PriceClass:PriceClass}" --output json | jq -r '[
