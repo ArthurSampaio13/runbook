@@ -1,737 +1,402 @@
 #!/usr/bin/env python3
-"""
-AWS Runbook Generator
-Gera automaticamente um documento Word (.docx) com inventário completo de recursos AWS
-"""
-
 import boto3
 import json
 from datetime import datetime
 from docx import Document
-from docx.shared import Inches, Pt
+from docx.shared import Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.style import WD_STYLE_TYPE
+from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.shared import OxmlElement, qn
-import logging
-import sys
-import os
+import requests
+from io import BytesIO
 from botocore.exceptions import ClientError, NoCredentialsError
+import logging
 
-# Configuração de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class AWSRunbookGenerator:
-    def __init__(self):
-        self.session = None
-        self.account_id = None
-        self.account_name = None
-        self.doc = Document()
-        self.data = {}
+    def __init__(self, aws_accounts=None):
+        self.aws_accounts = aws_accounts or [{'profile_name': 'default', 'region': 'us-east-1'}]
+        self.document = Document()
+        self.aws_sessions = []
+        self.aws_region_image_url = "https://d1.awsstatic.com/legal/aws-logo-web-300x180_563e6ffa42b4e85e2a6fd8bda7e7a7b6c84efbe7.png"
         
-    def setup_aws_session(self):
-        """Configura a sessão AWS e obtém informações da conta"""
-        try:
-            self.session = boto3.Session()
-            sts_client = self.session.client('sts')
-            identity = sts_client.get_caller_identity()
-            self.account_id = identity['Account']
-            logger.info(f"Conectado à conta AWS: {self.account_id}")
-            return True
-        except NoCredentialsError:
-            logger.error("Credenciais AWS não encontradas. Configure suas credenciais.")
-            return False
-        except Exception as e:
-            logger.error(f"Erro ao conectar com AWS: {str(e)}")
-            return False
-    
-    def collect_account_summary(self):
-        """Coleta informações gerais da conta"""
-        logger.info("Coletando informações da conta...")
-        try:
-            sts_client = self.session.client('sts')
-            identity = sts_client.get_caller_identity()
-            
-            iam_client = self.session.client('iam')
-            account_aliases = iam_client.list_account_aliases()
-            
-            self.data['account_summary'] = {
-                'account_id': identity['Account'],
-                'user_id': identity.get('UserId', 'N/A'),
-                'arn': identity.get('Arn', 'N/A'),
-                'aliases': account_aliases.get('AccountAliases', [])
-            }
-            
-            if self.data['account_summary']['aliases']:
-                self.account_name = self.data['account_summary']['aliases'][0]
-            else:
-                self.account_name = f"AWS-{self.account_id}"
+    def setup_aws_sessions(self):
+        for account in self.aws_accounts:
+            try:
+                if 'role_arn' in account:
+                    sts_client = boto3.client('sts')
+                    assumed_role = sts_client.assume_role(
+                        RoleArn=account['role_arn'],
+                        RoleSessionName='RunbookGenerator'
+                    )
+                    
+                    session = boto3.Session(
+                        aws_access_key_id=assumed_role['Credentials']['AccessKeyId'],
+                        aws_secret_access_key=assumed_role['Credentials']['SecretAccessKey'],
+                        aws_session_token=assumed_role['Credentials']['SessionToken'],
+                        region_name=account.get('region', 'us-east-1')
+                    )
+                else:
+                    session = boto3.Session(
+                        profile_name=account.get('profile_name', 'default'),
+                        region_name=account.get('region', 'us-east-1')
+                    )
                 
-        except Exception as e:
-            logger.error(f"Erro ao coletar informações da conta: {str(e)}")
-            self.data['account_summary'] = {'error': str(e)}
-    
-    def collect_organizations(self):
-        """Coleta informações do AWS Organizations"""
-        logger.info("Coletando informações do Organizations...")
-        try:
-            org_client = self.session.client('organizations')
-            org_info = org_client.describe_organization()
-            
-            self.data['organizations'] = {
-                'organization_id': org_info['Organization']['Id'],
-                'master_account_id': org_info['Organization']['MasterAccountId'],
-                'feature_set': org_info['Organization']['FeatureSet']
-            }
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'AWSOrganizationsNotInUseException':
-                self.data['organizations'] = {'status': 'Não está em uma organização'}
-            else:
-                self.data['organizations'] = {'error': str(e)}
-        except Exception as e:
-            self.data['organizations'] = {'error': str(e)}
-    
-    def collect_control_tower(self):
-        """Coleta informações do AWS Control Tower"""
-        logger.info("Coletando informações do Control Tower...")
-        try:
-            ct_client = self.session.client('controltower')
-            landing_zones = ct_client.list_landing_zones()
-            
-            self.data['control_tower'] = {
-                'status': 'Ativo' if landing_zones['landingZones'] else 'Inativo',
-                'landing_zones': len(landing_zones['landingZones'])
-            }
-        except Exception as e:
-            self.data['control_tower'] = {'status': 'Não disponível', 'error': str(e)}
-    
-    def collect_vpc_summary(self):
-        """Coleta informações de VPCs"""
-        logger.info("Coletando informações de VPCs...")
-        try:
-            ec2_client = self.session.client('ec2')
-            
-            # VPCs
-            vpcs = ec2_client.describe_vpcs()
-            
-            # Subnets
-            subnets = ec2_client.describe_subnets()
-            
-            # VPC Peering
-            peering = ec2_client.describe_vpc_peering_connections()
-            
-            self.data['vpc_summary'] = {
-                'total_vpcs': len(vpcs['Vpcs']),
-                'total_subnets': len(subnets['Subnets']),
-                'peering_connections': len(peering['VpcPeeringConnections']),
-                'vpcs': [
-                    {
-                        'vpc_id': vpc['VpcId'],
-                        'cidr_block': vpc['CidrBlock'],
-                        'state': vpc['State'],
-                        'is_default': vpc.get('IsDefault', False)
-                    } for vpc in vpcs['Vpcs']
-                ]
-            }
-        except Exception as e:
-            self.data['vpc_summary'] = {'error': str(e)}
-    
-    def collect_route53(self):
-        """Coleta informações do Route 53"""
-        logger.info("Coletando informações do Route 53...")
-        try:
-            route53_client = self.session.client('route53')
-            hosted_zones = route53_client.list_hosted_zones()
-            
-            zones_data = []
-            for zone in hosted_zones['HostedZones']:
-                zone_info = {
-                    'name': zone['Name'],
-                    'id': zone['Id'],
-                    'record_count': zone['ResourceRecordSetCount']
-                }
-                zones_data.append(zone_info)
-            
-            self.data['route53'] = {
-                'total_zones': len(zones_data),
-                'zones': zones_data
-            }
-        except Exception as e:
-            self.data['route53'] = {'error': str(e)}
-    
-    def collect_ec2_instances(self):
-        """Coleta informações de instâncias EC2"""
-        logger.info("Coletando informações de instâncias EC2...")
-        try:
-            ec2_client = self.session.client('ec2')
-            instances = ec2_client.describe_instances()
-            
-            instances_data = []
-            for reservation in instances['Reservations']:
-                for instance in reservation['Instances']:
-                    instance_info = {
-                        'instance_id': instance['InstanceId'],
-                        'instance_type': instance['InstanceType'],
-                        'state': instance['State']['Name'],
-                        'launch_time': instance.get('LaunchTime', 'N/A'),
-                        'private_ip': instance.get('PrivateIpAddress', 'N/A'),
-                        'public_ip': instance.get('PublicIpAddress', 'N/A')
-                    }
-                    instances_data.append(instance_info)
-            
-            self.data['ec2_instances'] = {
-                'total_instances': len(instances_data),
-                'instances': instances_data
-            }
-        except Exception as e:
-            self.data['ec2_instances'] = {'error': str(e)}
-    
-    def collect_rds(self):
-        """Coleta informações de RDS"""
-        logger.info("Coletando informações de RDS...")
-        try:
-            rds_client = self.session.client('rds')
-            db_instances = rds_client.describe_db_instances()
-            
-            rds_data = []
-            for db in db_instances['DBInstances']:
-                db_info = {
-                    'identifier': db['DBInstanceIdentifier'],
-                    'engine': db['Engine'],
-                    'status': db['DBInstanceStatus'],
-                    'endpoint': db.get('Endpoint', {}).get('Address', 'N/A'),
-                    'instance_class': db['DBInstanceClass']
-                }
-                rds_data.append(db_info)
-            
-            self.data['rds'] = {
-                'total_instances': len(rds_data),
-                'instances': rds_data
-            }
-        except Exception as e:
-            self.data['rds'] = {'error': str(e)}
-    
-    def collect_api_gateway(self):
-        """Coleta informações do API Gateway"""
-        logger.info("Coletando informações do API Gateway...")
-        try:
-            apigw_client = self.session.client('apigateway')
-            apis = apigw_client.get_rest_apis()
-            
-            apis_data = []
-            for api in apis['items']:
-                api_info = {
-                    'id': api['id'],
-                    'name': api['name'],
-                    'created_date': api.get('createdDate', 'N/A')
-                }
-                apis_data.append(api_info)
-            
-            self.data['api_gateway'] = {
-                'total_apis': len(apis_data),
-                'apis': apis_data
-            }
-        except Exception as e:
-            self.data['api_gateway'] = {'error': str(e)}
-    
-    def collect_cloudfront(self):
-        """Coleta informações do CloudFront"""
-        logger.info("Coletando informações do CloudFront...")
-        try:
-            cf_client = self.session.client('cloudfront')
-            distributions = cf_client.list_distributions()
-            
-            dist_data = []
-            if 'Items' in distributions['DistributionList']:
-                for dist in distributions['DistributionList']['Items']:
-                    dist_info = {
-                        'id': dist['Id'],
-                        'domain_name': dist['DomainName'],
-                        'status': dist['Status'],
-                        'enabled': dist['Enabled']
-                    }
-                    dist_data.append(dist_info)
-            
-            self.data['cloudfront'] = {
-                'total_distributions': len(dist_data),
-                'distributions': dist_data
-            }
-        except Exception as e:
-            self.data['cloudfront'] = {'error': str(e)}
-    
-    def collect_lambda(self):
-        """Coleta informações do Lambda"""
-        logger.info("Coletando informações do Lambda...")
-        try:
-            lambda_client = self.session.client('lambda')
-            functions = lambda_client.list_functions()
-            
-            func_data = []
-            for func in functions['Functions']:
-                func_info = {
-                    'name': func['FunctionName'],
-                    'runtime': func.get('Runtime', 'N/A'),
-                    'handler': func.get('Handler', 'N/A'),
-                    'last_modified': func.get('LastModified', 'N/A')
-                }
-                func_data.append(func_info)
-            
-            self.data['lambda'] = {
-                'total_functions': len(func_data),
-                'functions': func_data
-            }
-        except Exception as e:
-            self.data['lambda'] = {'error': str(e)}
-    
-    def collect_sns(self):
-        """Coleta informações do SNS"""
-        logger.info("Coletando informações do SNS...")
-        try:
-            sns_client = self.session.client('sns')
-            topics = sns_client.list_topics()
-            
-            topics_data = []
-            for topic in topics['Topics']:
-                topic_arn = topic['TopicArn']
-                topic_name = topic_arn.split(':')[-1]
-                topics_data.append({
-                    'name': topic_name,
-                    'arn': topic_arn
+                self.aws_sessions.append({
+                    'session': session,
+                    'account_config': account
                 })
-            
-            self.data['sns'] = {
-                'total_topics': len(topics_data),
-                'topics': topics_data
-            }
-        except Exception as e:
-            self.data['sns'] = {'error': str(e)}
-    
-    def collect_backup(self):
-        """Coleta informações do AWS Backup"""
-        logger.info("Coletando informações do AWS Backup...")
-        try:
-            backup_client = self.session.client('backup')
-            backup_plans = backup_client.list_backup_plans()
-            
-            plans_data = []
-            for plan in backup_plans['BackupPlansList']:
-                plan_info = {
-                    'id': plan['BackupPlanId'],
-                    'name': plan['BackupPlanName'],
-                    'creation_date': plan.get('CreationDate', 'N/A')
-                }
-                plans_data.append(plan_info)
-            
-            self.data['backup'] = {
-                'total_plans': len(plans_data),
-                'plans': plans_data
-            }
-        except Exception as e:
-            self.data['backup'] = {'error': str(e)}
-    
-    def collect_eventbridge(self):
-        """Coleta informações do EventBridge"""
-        logger.info("Coletando informações do EventBridge...")
-        try:
-            events_client = self.session.client('events')
-            rules = events_client.list_rules()
-            
-            rules_data = []
-            for rule in rules['Rules']:
-                rule_info = {
-                    'name': rule['Name'],
-                    'state': rule.get('State', 'N/A'),
-                    'event_pattern': rule.get('EventPattern', 'N/A')
-                }
-                rules_data.append(rule_info)
-            
-            self.data['eventbridge'] = {
-                'total_rules': len(rules_data),
-                'rules': rules_data
-            }
-        except Exception as e:
-            self.data['eventbridge'] = {'error': str(e)}
-    
-    def collect_load_balancers(self):
-        """Coleta informações dos Load Balancers"""
-        logger.info("Coletando informações dos Load Balancers...")
-        try:
-            elbv2_client = self.session.client('elbv2')
-            load_balancers = elbv2_client.describe_load_balancers()
-            
-            lb_data = []
-            for lb in load_balancers['LoadBalancers']:
-                lb_info = {
-                    'name': lb['LoadBalancerName'],
-                    'type': lb['Type'],
-                    'scheme': lb['Scheme'],
-                    'state': lb['State']['Code'],
-                    'dns_name': lb['DNSName']
-                }
-                lb_data.append(lb_info)
-            
-            self.data['load_balancers'] = {
-                'total_load_balancers': len(lb_data),
-                'load_balancers': lb_data
-            }
-        except Exception as e:
-            self.data['load_balancers'] = {'error': str(e)}
-    
-    def collect_ecs(self):
-        """Coleta informações do ECS"""
-        logger.info("Coletando informações do ECS...")
-        try:
-            ecs_client = self.session.client('ecs')
-            clusters = ecs_client.list_clusters()
-            
-            clusters_data = []
-            for cluster_arn in clusters['clusterArns']:
-                cluster_name = cluster_arn.split('/')[-1]
                 
-                # Obter serviços do cluster
-                services = ecs_client.list_services(cluster=cluster_arn)
+            except Exception as e:
+                logger.error(f"Failed to setup session for account {account}: {str(e)}")
                 
-                cluster_info = {
-                    'name': cluster_name,
-                    'arn': cluster_arn,
-                    'services_count': len(services['serviceArns'])
-                }
-                clusters_data.append(cluster_info)
-            
-            self.data['ecs'] = {
-                'total_clusters': len(clusters_data),
-                'clusters': clusters_data
-            }
-        except Exception as e:
-            self.data['ecs'] = {'error': str(e)}
-    
-    def collect_iam_identity_center(self):
-        """Coleta informações do IAM Identity Center (SSO)"""
-        logger.info("Coletando informações do IAM Identity Center...")
-        try:
-            sso_client = self.session.client('sso-admin')
-            instances = sso_client.list_instances()
-            
-            sso_data = []
-            for instance in instances['Instances']:
-                instance_info = {
-                    'instance_arn': instance['InstanceArn'],
-                    'identity_store_id': instance['IdentityStoreId']
-                }
-                sso_data.append(instance_info)
-            
-            self.data['iam_identity_center'] = {
-                'total_instances': len(sso_data),
-                'instances': sso_data,
-                'status': 'Ativo' if sso_data else 'Inativo'
-            }
-        except Exception as e:
-            self.data['iam_identity_center'] = {'status': 'Não disponível', 'error': str(e)}
-    
-    def collect_all_data(self):
-        """Coleta todos os dados AWS"""
-        logger.info("Iniciando coleta de dados AWS...")
+    def create_cover_page(self):
+        title = self.document.add_heading('AWS Runbook', 0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         
-        collection_methods = [
-            self.collect_account_summary,
-            self.collect_organizations,
-            self.collect_control_tower,
-            self.collect_vpc_summary,
-            self.collect_route53,
-            self.collect_ec2_instances,
-            self.collect_rds,
-            self.collect_api_gateway,
-            self.collect_cloudfront,
-            self.collect_lambda,
-            self.collect_sns,
-            self.collect_backup,
-            self.collect_eventbridge,
-            self.collect_load_balancers,
-            self.collect_ecs,
-            self.collect_iam_identity_center
-        ]
-        
-        for method in collection_methods:
-            try:
-                method()
-            except Exception as e:
-                logger.warning(f"Erro ao executar {method.__name__}: {str(e)}")
-        
-        logger.info("Coleta de dados concluída.")
-    
-    def setup_document_styles(self):
-        """Configura estilos do documento"""
-        # Título principal
-        title_style = self.doc.styles.add_style('CustomTitle', WD_STYLE_TYPE.PARAGRAPH)
-        title_style.font.name = 'Arial'
-        title_style.font.size = Pt(24)
-        title_style.font.bold = True
-        title_style.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        title_style.paragraph_format.space_after = Pt(12)
-        
-        # Cabeçalho de seção
-        heading_style = self.doc.styles.add_style('CustomHeading', WD_STYLE_TYPE.PARAGRAPH)
-        heading_style.font.name = 'Arial'
-        heading_style.font.size = Pt(16)
-        heading_style.font.bold = True
-        heading_style.paragraph_format.space_before = Pt(12)
-        heading_style.paragraph_format.space_after = Pt(6)
-        
-        # Parágrafo normal
-        normal_style = self.doc.styles['Normal']
-        normal_style.font.name = 'Arial'
-        normal_style.font.size = Pt(11)
-    
-    def add_cover_page(self):
-        """Adiciona capa do documento"""
-        logger.info("Criando capa do documento...")
-        
-        # Logo (se existir)
-        if os.path.exists('logo.png'):
-            try:
-                p = self.doc.add_paragraph()
-                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run = p.add_run()
-                run.add_picture('logo.png', width=Inches(2))
-            except Exception as e:
-                logger.warning(f"Erro ao inserir logo: {str(e)}")
-        
-        # Título
-        title = self.doc.add_paragraph('AWS RUNBOOK', style='CustomTitle')
-        
-        # Subtítulo com nome da conta
-        subtitle = self.doc.add_paragraph()
+        subtitle = self.document.add_paragraph()
+        subtitle_run = subtitle.add_run(f"Generated on {datetime.now().strftime('%B %d, %Y at %H:%M:%S')}")
+        subtitle_run.bold = True
         subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        subtitle_run = subtitle.add_run(f"Conta: {self.account_name}")
-        subtitle_run.font.size = Pt(14)
-        subtitle_run.font.bold = True
         
-        # Data de geração
-        date_p = self.doc.add_paragraph()
-        date_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        date_run = date_p.add_run(f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-        date_run.font.size = Pt(12)
+        self.document.add_page_break()
         
-        # Quebra de página
-        self.doc.add_page_break()
-    
-    def add_table_of_contents(self):
-        """Adiciona sumário"""
-        logger.info("Criando sumário...")
+    def create_table_of_contents(self):
+        toc_heading = self.document.add_heading('Table of Contents', level=1)
         
-        toc_title = self.doc.add_paragraph('SUMÁRIO', style='CustomTitle')
-        
-        sections = [
-            "1. Resumo da Conta",
-            "2. AWS Organizations",
-            "3. AWS Control Tower",
-            "4. Resumo de VPCs",
-            "5. Route 53 (DNS)",
-            "6. Instâncias EC2",
-            "7. RDS (Banco de Dados)",
-            "8. API Gateway",
-            "9. CloudFront",
-            "10. Lambda Functions",
-            "11. SNS (Notificações)",
-            "12. AWS Backup",
-            "13. EventBridge",
-            "14. Load Balancers",
-            "15. ECS (Containers)",
-            "16. IAM Identity Center"
+        toc_data = [
+            ('Summary', '2'),
+            ('Global Positioning', '3'),
+            ('Account Summary', '4'),
+            ('AWS Organizations', '4'),
+            ('AWS Control Tower', '4'),
+            ('VPC Summary', '5'),
+            ('Public DNS (Route 53)', '9'),
+            ('EC2 Instances', '9'),
+            ('RDS', '9'),
+            ('API Gateway', '10'),
+            ('CloudFront', '10'),
+            ('Lambda', '10'),
+            ('SNS', '11'),
+            ('AWS Backup', '11'),
+            ('EventBridge', '12'),
+            ('LoadBalancer', '12'),
+            ('ECS', '13'),
+            ('IAM Identity Center (SSO)', '13')
         ]
         
-        for section in sections:
-            p = self.doc.add_paragraph(section)
-            p.paragraph_format.left_indent = Inches(0.5)
-        
-        self.doc.add_page_break()
-    
-    def add_section(self, title, description, data_key):
-        """Adiciona uma seção ao documento"""
-        # Título da seção
-        self.doc.add_paragraph(title, style='CustomHeading')
-        
-        # Descrição
-        self.doc.add_paragraph(description)
-        
-        # Dados
-        if data_key in self.data:
-            data = self.data[data_key]
-            
-            if 'error' in data:
-                error_p = self.doc.add_paragraph(f"Erro: {data['error']}")
-                error_p.runs[0].font.color.rgb = None  # Vermelho seria ideal
-            else:
-                self.create_data_table(data)
-        else:
-            self.doc.add_paragraph("Dados não disponíveis")
-        
-        self.doc.add_paragraph()  # Espaçamento
-    
-    def create_data_table(self, data):
-        """Cria uma tabela com os dados"""
-        if isinstance(data, dict):
-            # Criar tabela simples para dados de dicionário
-            if any(isinstance(v, list) for v in data.values()):
-                # Se há listas, criar tabelas específicas
-                for key, value in data.items():
-                    if isinstance(value, list) and value:
-                        if key in ['instances', 'zones', 'apis', 'distributions', 'functions', 
-                                 'topics', 'plans', 'rules', 'load_balancers', 'clusters']:
-                            self.create_detailed_table(key, value)
-                    elif not isinstance(value, list):
-                        p = self.doc.add_paragraph(f"{key.replace('_', ' ').title()}: {value}")
-            else:
-                # Tabela simples para dados básicos
-                table = self.doc.add_table(rows=1, cols=2)
-                table.style = 'Table Grid'
-                
-                hdr_cells = table.rows[0].cells
-                hdr_cells[0].text = 'Propriedade'
-                hdr_cells[1].text = 'Valor'
-                
-                for key, value in data.items():
-                    if not isinstance(value, (list, dict)):
-                        row_cells = table.add_row().cells
-                        row_cells[0].text = key.replace('_', ' ').title()
-                        row_cells[1].text = str(value)
-    
-    def create_detailed_table(self, data_type, items):
-        """Cria tabela detalhada para listas de itens"""
-        if not items:
-            return
-        
-        # Determinar colunas baseado no tipo de dados
-        if data_type == 'instances' and 'instance_id' in items[0]:
-            # EC2 Instances
-            table = self.doc.add_table(rows=1, cols=5)
-            headers = ['Instance ID', 'Type', 'State', 'Private IP', 'Public IP']
-            keys = ['instance_id', 'instance_type', 'state', 'private_ip', 'public_ip']
-        elif data_type == 'instances' and 'identifier' in items[0]:
-            # RDS Instances
-            table = self.doc.add_table(rows=1, cols=5)
-            headers = ['Identifier', 'Engine', 'Status', 'Endpoint', 'Class']
-            keys = ['identifier', 'engine', 'status', 'endpoint', 'instance_class']
-        elif data_type == 'zones':
-            # Route 53 Zones
-            table = self.doc.add_table(rows=1, cols=3)
-            headers = ['Name', 'ID', 'Record Count']
-            keys = ['name', 'id', 'record_count']
-        elif data_type == 'functions':
-            # Lambda Functions
-            table = self.doc.add_table(rows=1, cols=4)
-            headers = ['Name', 'Runtime', 'Handler', 'Last Modified']
-            keys = ['name', 'runtime', 'handler', 'last_modified']
-        else:
-            # Tabela genérica
-            if items and isinstance(items[0], dict):
-                first_item = items[0]
-                headers = list(first_item.keys())
-                keys = headers
-                table = self.doc.add_table(rows=1, cols=len(headers))
-            else:
-                return
-        
+        table = self.document.add_table(rows=1, cols=2)
         table.style = 'Table Grid'
         
-        # Cabeçalhos
+        hdr_cells = table.rows[0].cells
+        hdr_cells[0].text = 'Section'
+        hdr_cells[1].text = 'Page'
+        
+        for section, page in toc_data:
+            row_cells = table.add_row().cells
+            row_cells[0].text = section
+            row_cells[1].text = page
+            
+        self.document.add_page_break()
+        
+    def add_aws_region_image(self):
+        try:
+            response = requests.get(self.aws_region_image_url)
+            if response.status_code == 200:
+                image_stream = BytesIO(response.content)
+                paragraph = self.document.add_paragraph()
+                run = paragraph.add_run()
+                run.add_picture(image_stream, width=Inches(4))
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            else:
+                self.document.add_paragraph("AWS Region Image (Unable to load)")
+        except Exception as e:
+            logger.error(f"Failed to add AWS region image: {str(e)}")
+            self.document.add_paragraph("AWS Region Image (Unable to load)")
+            
+    def get_account_summary(self):
+        account_data = []
+        
+        for aws_session in self.aws_sessions:
+            session = aws_session['session']
+            try:
+                sts_client = session.client('sts')
+                account_id = sts_client.get_caller_identity()['Account']
+                
+                try:
+                    support_client = session.client('support', region_name='us-east-1')
+                    support_plan = "Basic" 
+                except:
+                    support_plan = "Unknown"
+                
+                try:
+                    iam_client = session.client('iam')
+                    aliases = iam_client.list_account_aliases()
+                    account_alias = aliases['AccountAliases'][0] if aliases['AccountAliases'] else "No alias"
+                except:
+                    account_alias = "Unknown"
+                
+                ec2_client = session.client('ec2')
+                regions = ec2_client.describe_regions()
+                active_regions = len(regions['Regions'])
+                
+                account_data.append({
+                    'account_id': account_id,
+                    'support_plan': support_plan,
+                    'account_alias': account_alias,
+                    'active_regions': str(active_regions),
+                    'account_role': aws_session['account_config'].get('role_arn', 'Direct Access')
+                })
+                
+            except Exception as e:
+                logger.error(f"Failed to get account summary: {str(e)}")
+                account_data.append({
+                    'account_id': 'Unknown',
+                    'support_plan': 'Unknown',
+                    'account_alias': 'Unknown',
+                    'active_regions': 'Unknown',
+                    'account_role': 'Unknown'
+                })
+                
+        return account_data
+        
+    def get_vpc_summary(self):
+        vpc_data = []
+        
+        for aws_session in self.aws_sessions:
+            session = aws_session['session']
+            try:
+                ec2_client = session.client('ec2')
+                vpcs = ec2_client.describe_vpcs()
+                
+                for vpc in vpcs['Vpcs']:
+                    vpc_name = 'N/A'
+                    if 'Tags' in vpc:
+                        for tag in vpc['Tags']:
+                            if tag['Key'] == 'Name':
+                                vpc_name = tag['Value']
+                                break
+                    
+                    vpc_data.append({
+                        'vpc_id': vpc['VpcId'],
+                        'vpc_name': vpc_name,
+                        'cidr_block': vpc['CidrBlock'],
+                        'state': vpc['State'],
+                        'is_default': str(vpc['IsDefault'])
+                    })
+                    
+            except Exception as e:
+                logger.error(f"Failed to get VPC summary: {str(e)}")
+                
+        return vpc_data
+        
+    def get_ec2_instances(self):
+        ec2_data = []
+        
+        for aws_session in self.aws_sessions:
+            session = aws_session['session']
+            try:
+                ec2_client = session.client('ec2')
+                instances = ec2_client.describe_instances()
+                
+                for reservation in instances['Reservations']:
+                    for instance in reservation['Instances']:
+                        instance_name = 'N/A'
+                        if 'Tags' in instance:
+                            for tag in instance['Tags']:
+                                if tag['Key'] == 'Name':
+                                    instance_name = tag['Value']
+                                    break
+                        
+                        ec2_data.append({
+                            'instance_id': instance['InstanceId'],
+                            'instance_name': instance_name,
+                            'instance_type': instance['InstanceType'],
+                            'state': instance['State']['Name'],
+                            'private_ip': instance.get('PrivateIpAddress', 'N/A'),
+                            'public_ip': instance.get('PublicIpAddress', 'N/A')
+                        })
+                        
+            except Exception as e:
+                logger.error(f"Failed to get EC2 instances: {str(e)}")
+                
+        return ec2_data
+        
+    def get_rds_instances(self):
+        rds_data = []
+        
+        for aws_session in self.aws_sessions:
+            session = aws_session['session']
+            try:
+                rds_client = session.client('rds')
+                db_instances = rds_client.describe_db_instances()
+                
+                for db in db_instances['DBInstances']:
+                    rds_data.append({
+                        'db_instance_id': db['DBInstanceIdentifier'],
+                        'db_engine': db['Engine'],
+                        'db_class': db['DBInstanceClass'],
+                        'status': db['DBInstanceStatus'],
+                        'endpoint': db.get('Endpoint', {}).get('Address', 'N/A'),
+                        'port': str(db.get('Endpoint', {}).get('Port', 'N/A'))
+                    })
+                    
+            except Exception as e:
+                logger.error(f"Failed to get RDS instances: {str(e)}")
+                
+        return rds_data
+        
+    def get_lambda_functions(self):
+        lambda_data = []
+        
+        for aws_session in self.aws_sessions:
+            session = aws_session['session']
+            try:
+                lambda_client = session.client('lambda')
+                functions = lambda_client.list_functions()
+                
+                for func in functions['Functions']:
+                    lambda_data.append({
+                        'function_name': func['FunctionName'],
+                        'runtime': func['Runtime'],
+                        'handler': func['Handler'],
+                        'code_size': str(func['CodeSize']),
+                        'timeout': str(func['Timeout']),
+                        'memory_size': str(func['MemorySize'])
+                    })
+                    
+            except Exception as e:
+                logger.error(f"Failed to get Lambda functions: {str(e)}")
+                
+        return lambda_data
+        
+    def create_data_table(self, title, headers, data):
+        self.document.add_heading(title, level=2)
+        
+        if not data:
+            self.document.add_paragraph("No data available")
+            return
+            
+        table = self.document.add_table(rows=1, cols=len(headers))
+        table.style = 'Table Grid'
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        
         hdr_cells = table.rows[0].cells
         for i, header in enumerate(headers):
-            hdr_cells[i].text = header.replace('_', ' ').title()
-        
-        # Dados
-        for item in items[:10]:  # Limitar a 10 itens para não sobrecarregar
+            hdr_cells[i].text = header
+            hdr_cells[i].paragraphs[0].runs[0].bold = True
+            
+        for item in data:
             row_cells = table.add_row().cells
-            for i, key in enumerate(keys):
-                if i < len(row_cells):
-                    value = item.get(key, 'N/A')
-                    if isinstance(value, datetime):
-                        value = value.strftime('%d/%m/%Y %H:%M')
-                    row_cells[i].text = str(value)
+            for i, header in enumerate(headers):
+                key = header.lower().replace(' ', '_')
+                row_cells[i].text = str(item.get(key, 'N/A'))
+                
+    def generate_runbook(self):
+        logger.info("Starting AWS Runbook generation...")
         
-        if len(items) > 10:
-            self.doc.add_paragraph(f"... e mais {len(items) - 10} itens")
-    
-    def generate_document(self):
-        """Gera o documento completo"""
-        logger.info("Gerando documento Word...")
+        self.setup_aws_sessions()
         
-        # Configurar estilos
-        self.setup_document_styles()
+        self.create_cover_page()
         
-        # Capa
-        self.add_cover_page()
+        self.create_table_of_contents()
         
-        # Sumário
-        self.add_table_of_contents()
+        self.document.add_heading('Summary', level=1)
+        self.document.add_paragraph(
+            "This runbook provides a comprehensive overview of AWS resources across "
+            "the specified accounts. It includes information about compute, storage, "
+            "networking, and security services."
+        )
         
-        # Seções
-        sections = [
-            ("1. RESUMO DA CONTA", "Informações gerais da conta AWS", "account_summary"),
-            ("2. AWS ORGANIZATIONS", "Status e configuração do AWS Organizations", "organizations"),
-            ("3. AWS CONTROL TOWER", "Status do AWS Control Tower", "control_tower"),
-            ("4. RESUMO DE VPCs", "Redes virtuais privadas e configurações", "vpc_summary"),
-            ("5. ROUTE 53 (DNS)", "Domínios e zonas DNS configuradas", "route53"),
-            ("6. INSTÂNCIAS EC2", "Servidores virtuais em execução", "ec2_instances"),
-            ("7. RDS (BANCO DE DADOS)", "Instâncias de banco de dados", "rds"),
-            ("8. API GATEWAY", "APIs registradas e configuradas", "api_gateway"),
-            ("9. CLOUDFRONT", "Distribuições CDN ativas", "cloudfront"),
-            ("10. LAMBDA FUNCTIONS", "Funções serverless configuradas", "lambda"),
-            ("11. SNS (NOTIFICAÇÕES)", "Tópicos de notificação", "sns"),
-            ("12. AWS BACKUP", "Planos e políticas de backup", "backup"),
-            ("13. EVENTBRIDGE", "Regras de eventos configuradas", "eventbridge"),
-            ("14. LOAD BALANCERS", "Balanceadores de carga", "load_balancers"),
-            ("15. ECS (CONTAINERS)", "Clusters e serviços de containers", "ecs"),
-            ("16. IAM IDENTITY CENTER", "Centro de identidade e SSO", "iam_identity_center")
-        ]
+        self.document.add_heading('Global Positioning', level=1)
+        self.document.add_paragraph(
+            "This section provides an overview of the AWS global infrastructure "
+            "and regional positioning for the analyzed accounts."
+        )
+        self.add_aws_region_image()
         
-        for title, description, data_key in sections:
-            self.add_section(title, description, data_key)
+        account_data = self.get_account_summary()
+        self.create_data_table(
+            'Account Summary',
+            ['Account ID', 'Support Plan', 'Account Alias', 'Active Regions', 'Account Role'],
+            account_data
+        )
         
-        # Salvar documento
-        filename = f"runbook_{self.account_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
-        self.doc.save(filename)
-        logger.info(f"Documento salvo como: {filename}")
+        self.create_data_table('AWS Organizations', ['Organization ID', 'Master Account', 'Status'], [])
+        
+        self.create_data_table('AWS Control Tower', ['Landing Zone', 'Status', 'Version'], [])
+        
+        vpc_data = self.get_vpc_summary()
+        self.create_data_table(
+            'VPC Summary',
+            ['VPC ID', 'VPC Name', 'CIDR Block', 'State', 'Is Default'],
+            vpc_data
+        )
+        
+        self.create_data_table('Public DNS (Route 53)', ['Hosted Zone', 'Domain Name', 'Type', 'Records'], [])
+        
+        ec2_data = self.get_ec2_instances()
+        self.create_data_table(
+            'EC2 Instances',
+            ['Instance ID', 'Instance Name', 'Instance Type', 'State', 'Private IP', 'Public IP'],
+            ec2_data
+        )
+        
+        rds_data = self.get_rds_instances()
+        self.create_data_table(
+            'RDS',
+            ['DB Instance ID', 'DB Engine', 'DB Class', 'Status', 'Endpoint', 'Port'],
+            rds_data
+        )
+        
+        self.create_data_table('API Gateway', ['API ID', 'API Name', 'Type', 'Stage', 'Endpoint'], [])
+        
+        self.create_data_table('CloudFront', ['Distribution ID', 'Domain Name', 'Status', 'Origin'], [])
+        
+        lambda_data = self.get_lambda_functions()
+        self.create_data_table(
+            'Lambda',
+            ['Function Name', 'Runtime', 'Handler', 'Code Size', 'Timeout', 'Memory Size'],
+            lambda_data
+        )
+        
+        self.create_data_table('SNS', ['Topic ARN', 'Topic Name', 'Subscriptions', 'Protocol'], [])
+        
+        self.create_data_table('AWS Backup', ['Backup Plan', 'Backup Vault', 'Recovery Points', 'Status'], [])
+        
+        self.create_data_table('EventBridge', ['Rule Name', 'Event Pattern', 'Targets', 'Status'], [])
+        
+        self.create_data_table('LoadBalancer', ['Load Balancer Name', 'Type', 'Scheme', 'State', 'DNS Name'], [])
+        
+        self.create_data_table('ECS', ['Cluster Name', 'Service Name', 'Task Definition', 'Running Tasks', 'Status'], [])
+        
+        self.create_data_table('IAM Identity Center (SSO)', ['Instance ARN', 'Identity Source', 'Status', 'Users'], [])
+        
+        filename = f"aws_runbook_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+        self.document.save(filename)
+        logger.info(f"Runbook generated successfully: {filename}")
+        
         return filename
-    
-    def run(self):
-        """Executa o gerador completo"""
-        logger.info("=== AWS RUNBOOK GENERATOR ===")
-        
-        # Configurar AWS
-        if not self.setup_aws_session():
-            return False
-        
-        # Coletar dados
-        self.collect_all_data()
-        
-        # Gerar documento
-        filename = self.generate_document()
-        
-        logger.info(f"Runbook gerado com sucesso: {filename}")
-        return True
 
 def main():
-    """Função principal"""
-    generator = AWSRunbookGenerator()
+    aws_accounts = [
+         # {
+-        #     'account_id': '123456789012',
+-        #     'role_arn': 'arn:aws:iam::123456789012:role/CrossAccountRole',
+-        #     'region': 'us-west-2'
+-        # } 
+        {
+            'profile_name': 'default',
+            'region': 'us-east-1'
+        },
+
+        ]
     
-    try:
-        success = generator.run()
-        if success:
-            print("\n✅ Runbook gerado com sucesso!")
-        else:
-            print("\n❌ Falha na geração do runbook.")
-            sys.exit(1)
-    except KeyboardInterrupt:
-        print("\n⏹️  Operação cancelada pelo usuário.")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Erro inesperado: {str(e)}")
-        print(f"\n❌ Erro inesperado: {str(e)}")
-        sys.exit(1)
+    generator = AWSRunbookGenerator(aws_accounts)
+    filename = generator.generate_runbook()
+    print(f"AWS Runbook generated: {filename}")
 
 if __name__ == "__main__":
     main()
